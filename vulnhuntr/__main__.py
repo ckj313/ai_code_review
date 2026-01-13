@@ -4,8 +4,15 @@ import argparse
 import structlog
 from vulnhuntr.symbol_finder import SymbolExtractor
 from vulnhuntr.LLMs import Claude, ChatGPT, Ollama
-from vulnhuntr.prompts import *
-from rich import print
+from vulnhuntr.prompts import (
+    ANALYSIS_APPROACH_TEMPLATE,
+    GUIDELINES_TEMPLATE,
+    README_SUMMARY_PROMPT_TEMPLATE,
+    build_initial_analysis_prompt,
+    build_system_prompt,
+)
+from vulnhuntr.skill_loader import load_vuln_skills
+from rich.console import Console
 from typing import List, Generator
 from enum import Enum
 from pathlib import Path
@@ -29,28 +36,33 @@ import faulthandler
 faulthandler.enable()
 
 log = structlog.get_logger("vulnhuntr")
-
-class VulnType(str, Enum):
-    LFI = "LFI"
-    RCE = "RCE"
-    SSRF = "SSRF"
-    AFO = "AFO"
-    SQLI = "SQLI"
-    XSS = "XSS"
-    IDOR = "IDOR"
+console = Console(markup=False)
 
 class ContextCode(BaseModel):
     name: str = Field(description="Function or Class name")
     reason: str = Field(description="Brief reason why this function's code is needed for analysis")
     code_line: str = Field(description="The single line of code where where this context object is referenced.")
 
-class Response(BaseModel):
-    scratchpad: str = Field(description="Your step-by-step analysis process. Output in plaintext with no line breaks.")
-    analysis: str = Field(description="Your final analysis. Output in plaintext with no line breaks.")
-    poc: str = Field(description="Proof-of-concept exploit, if applicable.")
-    confidence_score: int = Field(description="0-10, where 0 is no confidence and 10 is absolute certainty because you have the entire user input to server output code path.")
-    vulnerability_types: List[VulnType] = Field(description="The types of identified vulnerabilities")
-    context_code: List[ContextCode] = Field(description="List of context code items requested for analysis, one function or class name per item. No standard library or third-party package code.")
+def build_vuln_type_enum(vuln_types: List[str]) -> type[Enum]:
+    return Enum("VulnType", {name: name for name in vuln_types}, type=str)
+
+
+def build_response_model(vuln_type_enum: type[Enum]) -> type[BaseModel]:
+    class Response(BaseModel):
+        scratchpad: str = Field(description="Your step-by-step analysis process. Output in plaintext with no line breaks.")
+        analysis: str = Field(description="Your final analysis. Output in plaintext with no line breaks.")
+        poc: str = Field(description="Proof-of-concept exploit, if applicable.")
+        confidence_score: int = Field(description="0-10, where 0 is no confidence and 10 is absolute certainty because you have the entire user input to server output code path.")
+        vulnerability_types: List[vuln_type_enum] = Field(description="The types of identified vulnerabilities")
+        context_code: List[ContextCode] = Field(description="List of context code items requested for analysis, one function or class name per item. No standard library or third-party package code.")
+
+    return Response
+
+
+def normalize_vuln_type(vuln_type: Enum | str) -> str:
+    if isinstance(vuln_type, Enum):
+        return vuln_type.value
+    return str(vuln_type)
 
 class ReadmeContent(BaseXmlModel, tag="readme_content"):
     content: str
@@ -299,23 +311,25 @@ def initialize_llm(llm_arg: str, system_prompt: str = "") -> Claude | ChatGPT | 
         raise ValueError(f"Invalid LLM argument: {llm_arg}\nValid options are: claude, gpt, ollama")
     return llm
 
-def print_readable(report: Response) -> None:
+def print_readable(report: BaseModel) -> None:
     for attr, value in vars(report).items():
-        print(f"{attr}:")
+        console.print(f"{attr}:")
         if isinstance(value, str):
             # For multiline strings, add indentation
             lines = value.split('\n')
             for line in lines:
-                print(f"  {line}")
+                console.print(f"  {line}")
         elif isinstance(value, list):
             # For lists, print each item on a new line
             for item in value:
-                print(f"  - {item}")
+                if isinstance(item, Enum):
+                    item = item.value
+                console.print(f"  - {item}")
         else:
             # For other types, just print the value
-            print(f"  {value}")
-        print('-' * 40)
-        print()  # Add an empty line between attributes
+            console.print(f"  {value}")
+        console.print('-' * 40)
+        console.print("")  # Add an empty line between attributes
 
 def run():
     parser = argparse.ArgumentParser(description='Analyze a GitHub project for vulnerabilities. Export your ANTHROPIC_API_KEY/OPENAI_API_KEY before running.')
@@ -327,6 +341,14 @@ def run():
 
     repo = RepoOps(args.root)
     code_extractor = SymbolExtractor(args.root)
+    skills = load_vuln_skills()
+    skill_names = sorted(skills)
+    vuln_display_names = [skills[name].display_name for name in skill_names]
+    VulnTypeEnum = build_vuln_type_enum(skill_names)
+    ResponseModel = build_response_model(VulnTypeEnum)
+    log.info("Loaded vuln skills", skills=skill_names)
+    if args.verbosity > 0:
+        console.print(f"Loaded skills: {', '.join(skill_names)}")
     # Get repo files that don't include stuff like tests and documentation
     files = repo.get_relevant_py_files()
 
@@ -362,7 +384,7 @@ def run():
         summary = ''
     
     # Initialize the system prompt with the README summary
-    system_prompt = (Instructions(instructions=SYS_PROMPT_TEMPLATE).to_xml() + b'\n' +
+    system_prompt = (Instructions(instructions=build_system_prompt(vuln_display_names)).to_xml() + b'\n' +
                 ReadmeSummary(readme_summary=summary).to_xml()
                 ).decode()
     
@@ -378,21 +400,21 @@ def run():
             if not len(content):
                 continue
 
-            print(f"\nAnalyzing {py_f}")
-            print('-' * 40 +'\n')
+            console.print(f"\nAnalyzing {py_f}")
+            console.print('-' * 40 +'\n')
 
             user_prompt =(
                     FileCode(file_path=str(py_f), file_source=content).to_xml() + b'\n' +
-                    Instructions(instructions=INITIAL_ANALYSIS_PROMPT_TEMPLATE).to_xml() + b'\n' +
+                    Instructions(instructions=build_initial_analysis_prompt(vuln_display_names)).to_xml() + b'\n' +
                     AnalysisApproach(analysis_approach=ANALYSIS_APPROACH_TEMPLATE).to_xml() + b'\n' +
                     PreviousAnalysis(previous_analysis='').to_xml() + b'\n' +
                     Guidelines(guidelines=GUIDELINES_TEMPLATE).to_xml() + b'\n' +
-                    ResponseFormat(response_format=json.dumps(Response.model_json_schema(), indent=4
+                    ResponseFormat(response_format=json.dumps(ResponseModel.model_json_schema(), indent=4
                     )
                 ).to_xml()
             ).decode()
 
-            initial_analysis_report: Response = llm.chat(user_prompt, response_model=Response)
+            initial_analysis_report = llm.chat(user_prompt, response_model=ResponseModel)
             log.info("Initial analysis complete", report=initial_analysis_report.model_dump())
 
             print_readable(initial_analysis_report)
@@ -401,6 +423,12 @@ def run():
             if initial_analysis_report.confidence_score > 0 and len(initial_analysis_report.vulnerability_types):
 
                 for vuln_type in initial_analysis_report.vulnerability_types:
+                    vuln_type_name = normalize_vuln_type(vuln_type)
+                    skill = skills.get(vuln_type_name)
+                    if not skill:
+                        log.warning("Unknown vulnerability type from model", vuln_type=vuln_type_name, file=py_f)
+                        continue
+                    log.info("Using vuln skill", vuln_type=vuln_type_name, skill=skill.name)
 
                     # Do not fetch the context code on the first pass of the secondary analysis because the context will be from the general analysis
                     stored_code_definitions = {}
@@ -412,7 +440,7 @@ def run():
                     previous_context_amount = 0
 
                     for i in range(7):
-                        log.info(f"Performing vuln-specific analysis", iteration=i, vuln_type=vuln_type, file=py_f)
+                        log.info(f"Performing vuln-specific analysis", iteration=i, vuln_type=vuln_type_name, file=py_f)
 
                         # Only lookup context code and previous analysis on second pass and onwards
                         if i > 0:
@@ -439,29 +467,29 @@ def run():
                                     else:
                                         snippet = definition.source[:75]
                                     
-                                    print(f"Name: {definition.name}")
-                                    print(f"Context search: {definition.context_name_requested}")
-                                    print(f"File Path: {definition.file_path}")
-                                    print(f"First two lines from source: {snippet}\n")
+                                    console.print(f"Name: {definition.name}")
+                                    console.print(f"Context search: {definition.context_name_requested}")
+                                    console.print(f"File Path: {definition.file_path}")
+                                    console.print(f"First two lines from source: {snippet}\n")
 
                         vuln_specific_user_prompt = (
                             FileCode(file_path=str(py_f), file_source=content).to_xml() + b'\n' +
                             definitions.to_xml() + b'\n' +  # These are all the requested context functions and classes
                             ExampleBypasses(
-                                example_bypasses='\n'.join(VULN_SPECIFIC_BYPASSES_AND_PROMPTS[vuln_type]['bypasses'])
+                                example_bypasses='\n'.join(skill.bypasses)
                             ).to_xml() + b'\n' +
-                            Instructions(instructions=VULN_SPECIFIC_BYPASSES_AND_PROMPTS[vuln_type]['prompt']).to_xml() + b'\n' +
+                            Instructions(instructions=skill.prompt).to_xml() + b'\n' +
                             AnalysisApproach(analysis_approach=ANALYSIS_APPROACH_TEMPLATE).to_xml() + b'\n' +
                             PreviousAnalysis(previous_analysis=previous_analysis).to_xml() + b'\n' +
                             Guidelines(guidelines=GUIDELINES_TEMPLATE).to_xml() + b'\n' +
                             ResponseFormat(
                                 response_format=json.dumps(
-                                    Response.model_json_schema(), indent=4
+                                    ResponseModel.model_json_schema(), indent=4
                                 )
                             ).to_xml()
                         ).decode()
 
-                        secondary_analysis_report: Response = llm.chat(vuln_specific_user_prompt, response_model=Response)
+                        secondary_analysis_report = llm.chat(vuln_specific_user_prompt, response_model=ResponseModel)
                         log.info("Secondary analysis complete", secondary_analysis_report=secondary_analysis_report.model_dump())
 
                         if args.verbosity > 0:

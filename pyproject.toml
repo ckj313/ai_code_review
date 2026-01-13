@@ -4,6 +4,7 @@ version = "0.1.0"
 description = ""
 authors = ["Dan <dan@protectai.com>", "Marcello <marcello@protectai.com>"]
 readme = "README.md"
+include = ["vulnhuntr/skills/**"]
 
 [tool.poetry.scripts]
 vulnhuntr = 'vulnhuntr.__main__:run'

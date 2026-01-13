@@ -1,305 +1,29 @@
-LFI_TEMPLATE = """
-Combine the code in <file_code> and <context_code> then analyze the code for remotely-exploitable Local File Inclusion (LFI) vulnerabilities by following the remote user-input call chain of code.
+from typing import Sequence
 
-LFI-Specific Focus Areas:
-1. High-Risk Functions and Methods:
-   - open(), file(), io.open()
-   - os.path.join() for file paths
-   - Custom file reading functions
 
-2. Path Traversal Opportunities:
-   - User-controlled file paths or names
-   - Dynamic inclusion of files or modules
+def _format_bullet_list(items: Sequence[str]) -> str:
+    return "\n".join(f"   - {item}" for item in items)
 
-3. File Operation Wrappers:
-   - Template engines with file inclusion features
-   - Custom file management classes
 
-4. Indirect File Inclusion:
-   - Configuration file parsing
-   - Plugin or extension loading systems
-   - Log file viewers
+def _format_numbered_list(items: Sequence[str]) -> str:
+    return "\n".join(f"{i}. {item}" for i, item in enumerate(items, start=1))
 
-5. Example LFI-Specific Bypass Techniques are provided in <example_bypasses></example_bypasses> tags
 
-When analyzing, consider:
-- How user input influences file paths or names
-- Effectiveness of path sanitization and validation
-- Potential for null byte injection or encoding tricks
-- Interaction with file system access controls
-"""
+def build_initial_analysis_prompt(vuln_display_names: Sequence[str]) -> str:
+    vuln_list = _format_bullet_list(vuln_display_names)
+    return INITIAL_ANALYSIS_PROMPT_TEMPLATE.format(vuln_list=vuln_list)
 
-RCE_TEMPLATE = """
-Combine the code in <file_code> and <context_code> tags then analyze for remotely-exploitable Remote Code Execution (RCE) vulnerabilities by following the remote user-input call chain of code.
 
-RCE-Specific Focus Areas:
-1. High-Risk Functions and Methods:
-   - eval(), exec(), subprocess modules
-   - os.system(), os.popen()
-   - pickle.loads(), yaml.load(), json.loads() with custom decoders
+def build_system_prompt(vuln_display_names: Sequence[str]) -> str:
+    vuln_list = _format_numbered_list(vuln_display_names)
+    return SYS_PROMPT_TEMPLATE.format(vuln_list=vuln_list)
 
-2. Indirect Code Execution:
-   - Dynamic imports (e.g., __import__())
-   - Reflection/introspection misuse
-   - Server-side template injection
-
-3. Command Injection Vectors:
-   - Shell command composition
-   - Unsanitized use of user input in system calls
-
-4. Deserialization Vulnerabilities:
-   - Unsafe deserialization of user-controlled data
-
-5. Example RCE-Specific Bypass Techniques are provided in <example_bypasses></example_bypasses> tags.
-
-When analyzing, consider:
-- How user input flows into these high-risk areas
-- Potential for filter evasion or sanitization bypasses
-- Environment-specific factors (e.g., Python version, OS) affecting exploitability
-"""
-
-XSS_TEMPLATE = """
-Combine the code in <file_code> and <context_code> tags then analyze for remotely-exploitable Cross-Site Scripting (XSS) vulnerabilities by following the remote user-input call chain of code.
-
-XSS-Specific Focus Areas:
-1. High-Risk Functions and Methods:
-   - HTML rendering functions
-   - JavaScript generation or manipulation
-   - DOM manipulation methods
-
-2. Output Contexts:
-   - Unescaped output in HTML content
-   - Attribute value insertion
-   - JavaScript code or JSON data embedding
-
-3. Input Handling:
-   - User input reflection in responses
-   - Sanitization and encoding functions
-   - Custom input filters or cleaners
-
-4. Indirect XSS Vectors:
-   - Stored user input (e.g., in databases, files)
-   - URL parameter reflection
-   - HTTP header injection points
-
-5. Example XSS-Specific Bypass Techniques are provided in <example_bypasses></example_bypasses> tags.
-
-When analyzing, consider:
-- How user input flows into HTML, JavaScript, or JSON contexts
-- Effectiveness of input validation, sanitization, and output encoding
-- Potential for filter evasion using encoding or obfuscation
-- Impact of Content Security Policy (CSP) if implemented
-"""
-
-AFO_TEMPLATE = """
-Combine the code in <file_code> and <context_code> tags then analyze for remotely-exploitable Arbitrary File Overwrite (AFO) vulnerabilities by following the remote user-input call chain of code.
-
-AFO-Specific Focus Areas:
-1. High-Risk Functions and Methods:
-   - open() with write modes
-   - os.rename(), shutil.move()
-   - Custom file writing functions
-
-2. Path Traversal Opportunities:
-   - User-controlled file paths
-   - Directory creation or manipulation
-
-3. File Operation Wrappers:
-   - Custom file management classes
-   - Frameworks' file handling methods
-
-4. Indirect File Writes:
-   - Log file manipulation
-   - Configuration file updates
-   - Cache file creation
-
-5. Example AFO-Specific Bypass Techniques are provided in <example_bypasses></example_bypasses> tags.
-
-When analyzing, consider:
-- How user input influences file paths or names
-- Effectiveness of path sanitization and validation
-- Potential for race conditions in file operations
-"""
-
-SSRF_TEMPLATE = """
-Combine the code in <file_code> and <context_code> tags then analyze for remotely-exploitable Server-Side Request Forgery (SSRF) vulnerabilities by following the remote user-input call chain of code.
-
-SSRF-Specific Focus Areas:
-1. High-Risk Functions and Methods:
-   - requests.get(), urllib.request.urlopen()
-   - Custom HTTP clients
-   - API calls to external services
-
-2. URL Parsing and Validation:
-   - URL parsing libraries usage
-   - Custom URL validation routines
-
-3. Indirect SSRF Vectors:
-   - File inclusion functions (e.g., reading from URLs)
-   - XML parsers with external entity processing
-   - PDF generators, image processors using remote resources
-
-4. Cloud Metadata Access:
-   - Requests to cloud provider metadata URLs
-
-5. Example SSRF-Specific Bypass Techniques are provided in <example_bypasses></example_bypasses> tags.
-
-When analyzing, consider:
-- How user input influences outgoing network requests
-- Effectiveness of URL validation and whitelisting approaches
-- Potential for DNS rebinding or time-of-check to time-of-use attacks
-"""
-
-SQLI_TEMPLATE = """
-Combine the code in <file_code> and <context_code> tags then analyze for remotely-exploitable SQL Injection (SQLI) vulnerabilities by following these steps:
-
-1. Identify Entry Points:
-   - Locate all points where remote user input is received (e.g., API parameters, form submissions).
-
-2. Trace Input Flow:
-   - Follow the user input as it flows through the application.
-   - Note any transformations or manipulations applied to the input.
-
-3. Locate SQL Operations:
-   - Find all locations where SQL queries are constructed or executed.
-   - Pay special attention to:
-     - Direct SQL query construction (e.g., cursor.execute())
-     - ORM methods that accept raw SQL (e.g., Model.objects.raw())
-     - Custom query builders
-
-4. Analyze Input Handling:
-   - Examine how user input is incorporated into SQL queries.
-   - Look for:
-     - String concatenation or formatting in SQL queries
-     - Parameterized queries implementation
-     - Dynamic table or column name usage
-
-5. Evaluate Security Controls:
-   - Identify any input validation, sanitization, or escaping mechanisms.
-   - Assess the effectiveness of these controls against SQLI attacks.
-
-6. Consider Bypass Techniques:
-   - Analyze potential ways to bypass identified security controls.
-   - Reference the SQLI-specific bypass techniques provided.
-
-7. Assess Impact:
-   - Evaluate the potential impact if the vulnerability is exploited.
-   - Consider the sensitivity of the data accessible through the vulnerable query.
-
-When analyzing, consider:
-- The complete path from user input to SQL execution
-- Any gaps in the analysis where more context is needed
-- The effectiveness of any security measures in place
-- Potential for filter evasion in different database contexts
-"""
-
-IDOR_TEMPLATE = """
-Combine the code in <file_code> and <context_code> tags then analyze for remotely-exploitable Insecure Direct Object Reference (IDOR) vulnerabilities.
-
-IDOR-Specific Focus Areas:
-1. Look for code segments involving IDs, keys, filenames, session tokens, or any other unique identifiers that might be used to access resources (e.g., user_id, file_id, order_id).
-
-2. Common Locations:
-   - URLs/Routes: Check if IDs are passed directly in the URL parameters (e.g., /user/{user_id}/profile).
-   - Form Parameters: Look for IDs submitted through forms.
-   - API Endpoints: Examine API requests where IDs are sent in request bodies or headers.
-
-3. Ensure Authorization is Enforced:
-   - Verify that the code checks the user's authorization before allowing access to the resource identified by the ID.
-   - Look for authorization checks immediately after the object reference is received.
-
-4. Common Functions:
-   - Functions like `has_permission()`, `is_authorized()`, or similar should be present near the object access code.
-   - Absence of such checks could indicate a potential IDOR vulnerability.
-
-5. Example IDOR-Specific Bypass Techniques are provided in <example_bypasses></example_bypasses> tags.
-
-When analyzing, consider:
-- How user input is used when processing a request.
-- Presence of any logic responsible for determining the authentication/authorization of a user.
-"""
-
-VULN_SPECIFIC_BYPASSES_AND_PROMPTS = {
-    "LFI": {
-        "prompt": LFI_TEMPLATE,
-        "bypasses" : [
-            "../../../../etc/passwd",
-            "/proc/self/environ",
-            "data://text/plain;base64,PD9waHAgc3lzdGVtKCRfR0VUWydjbWQnXSk7Pz4=",
-            "file:///etc/passwd",
-            "C:\\win.ini"
-            "/?../../../../../../../etc/passwd"
-        ]
-    },
-    "RCE": {
-        "prompt": RCE_TEMPLATE,
-        "bypasses" : [
-            "__import__('os').system('id')",
-            "eval('__import__(\\'os\\').popen(\\'id\\').read()')",
-            "exec('import subprocess;print(subprocess.check_output([\\'id\\']))')",
-            "globals()['__builtins__'].__import__('os').system('id')",
-            "getattr(__import__('os'), 'system')('id')",
-            "$(touch${IFS}/tmp/mcinerney)",
-            "import pickle; pickle.loads(b'cos\\nsystem\\n(S\"id\"\\ntR.')"
-        ]
-    },
-    "SSRF": {
-        "prompt": SSRF_TEMPLATE,
-        "bypasses": [
-            "http://0.0.0.0:22",
-            "file:///etc/passwd",
-            "dict://127.0.0.1:11211/",
-            "ftp://anonymous:anonymous@127.0.0.1:21",
-            "gopher://127.0.0.1:9000/_GET /"
-        ]
-    },
-    "AFO": {
-        "prompt": AFO_TEMPLATE,
-        "bypasses": [
-            "../../../etc/passwd%00.jpg",
-            "shell.py;.jpg",
-            ".htaccess",
-            "/proc/self/cmdline",
-            "../../config.py/."
-        ]
-    },
-    "SQLI": {
-        "prompt": SQLI_TEMPLATE,
-        "bypasses": [
-            "' UNION SELECT username, password FROM users--",
-            "1 OR 1=1--",
-            "admin'--",
-            "1; DROP TABLE users--",
-            "' OR '1'='1"
-        ]
-    },
-    "XSS": {
-        "prompt": XSS_TEMPLATE,
-        "bypasses": [
-            "{{request.application.__globals__.__builtins__.__import__('os').popen('id').read()}}",
-            "${7*7}",
-            "{% for x in ().__class__.__base__.__subclasses__() %}{% if \"warning\" in x.__name__ %}{{x()._module.__builtins__['__import__']('os').popen(\"id\").read()}}{%endif%}{% endfor %}",
-            "<script>alert(document.domain)</script>",
-            "javascript:alert(1)"
-        ]
-    },
-    "IDOR": {
-        "prompt": IDOR_TEMPLATE,
-        "bypasses": []
-    }
-}
 
 INITIAL_ANALYSIS_PROMPT_TEMPLATE = """
 Analyze the code in <file_code> tags for potential remotely exploitable vulnerabilities:
 1. Identify all remote user input entry points (e.g., API endpoints, form submissions) and if you can't find that, request the necessary classes or functions in the <context_code> tags.
 2. Locate potential vulnerability sinks for:
-   - Local File Inclusion (LFI)
-   - Arbitrary File Overwrite (AFO)
-   - Server-Side Request Forgery (SSRF)
-   - Remote Code Execution (RCE)
-   - Cross-Site Scripting (XSS)
-   - SQL Injection (SQLI)
-   - Insecure Direct Object Reference (IDOR)
+{vuln_list}
 3. Note any security controls or sanitization measures encountered along the way so you can craft bypass techniques for the proof of concept (PoC).
 4. Highlight areas where more context is needed to complete the analysis.
 
@@ -371,13 +95,7 @@ ANALYSIS_APPROACH_TEMPLATE = """Analysis Instructions:
 SYS_PROMPT_TEMPLATE = """
 You are the world's foremost expert in Python security analysis, renowned for uncovering novel and complex vulnerabilities in web applications. Your task is to perform an exhaustive static code analysis, focusing on remotely exploitable vulnerabilities including but not limited to:
 
-1. Local File Inclusion (LFI)
-2. Remote Code Execution (RCE)
-3. Server-Side Request Forgery (SSRF)
-4. Arbitrary File Overwrite (AFO)
-5. SQL Injection (SQLI)
-6. Cross-Site Scripting (XSS)
-7. Insecure Direct Object References (IDOR)
+{vuln_list}
 
 Your analysis must:
 - Meticulously track user input from remote sources to high-risk function sinks.
