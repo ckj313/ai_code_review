@@ -1,9 +1,18 @@
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List
 
 SKILLS_DIR = Path(__file__).with_name("skills")
+
+
+@dataclass(frozen=True)
+class SkillRule:
+    rule_id: str
+    skill_id: str
+    pattern: str
+    kind: str
 
 
 @dataclass(frozen=True)
@@ -12,6 +21,7 @@ class VulnSkill:
     display_name: str
     prompt: str
     bypasses: List[str]
+    rules: List[SkillRule]
 
 
 def _extract_tag(content: str, tag: str) -> str:
@@ -35,8 +45,40 @@ def _parse_bypasses(block: str) -> List[str]:
     return items
 
 
+def _parse_rules(block: str, skill_name: str) -> List[SkillRule]:
+    if not block:
+        return []
+    rules: List[SkillRule] = []
+    rule_index = 1
+    for line in block.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        kind = "regex"
+        pattern = line
+        if line.startswith("regex:"):
+            pattern = line[len("regex:"):].strip()
+        elif line.startswith("literal:"):
+            pattern = line[len("literal:"):].strip()
+            kind = "literal"
+        if not pattern:
+            continue
+        rule_id = f"{skill_name}_{rule_index:03d}"
+        rules.append(
+            SkillRule(
+                rule_id=rule_id,
+                skill_id=skill_name,
+                pattern=pattern,
+                kind=kind,
+            )
+        )
+        rule_index += 1
+    return rules
+
+
+@lru_cache(maxsize=4)
 def load_vuln_skills(skills_dir: Path | None = None) -> Dict[str, VulnSkill]:
-    root = skills_dir or SKILLS_DIR
+    root = Path(skills_dir) if skills_dir else SKILLS_DIR
     if not root.exists():
         raise FileNotFoundError(f"Skills directory not found: {root}")
 
@@ -50,6 +92,8 @@ def load_vuln_skills(skills_dir: Path | None = None) -> Dict[str, VulnSkill]:
             raise ValueError(f"Missing <prompt> tag in {skill_file}")
         bypasses_block = _extract_tag(content, "bypasses")
         bypasses = _parse_bypasses(bypasses_block)
+        rules_block = _extract_tag(content, "rules")
+        rules = _parse_rules(rules_block, name)
         if name in skills:
             raise ValueError(f"Duplicate skill name: {name}")
         skills[name] = VulnSkill(
@@ -57,6 +101,7 @@ def load_vuln_skills(skills_dir: Path | None = None) -> Dict[str, VulnSkill]:
             display_name=display_name,
             prompt=prompt,
             bypasses=bypasses,
+            rules=rules,
         )
 
     if not skills:

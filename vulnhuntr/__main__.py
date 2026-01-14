@@ -2,19 +2,18 @@ import json
 import re
 import argparse
 import structlog
-from vulnhuntr.symbol_finder import SymbolExtractor
+from vulnhuntr.c_symbol_finder import CSymbolExtractor
 from vulnhuntr.LLMs import Claude, ChatGPT, Ollama
 from vulnhuntr.prompts import (
     ANALYSIS_APPROACH_TEMPLATE,
     GUIDELINES_TEMPLATE,
     README_SUMMARY_PROMPT_TEMPLATE,
-    build_initial_analysis_prompt,
     build_system_prompt,
 )
+from vulnhuntr.rule_engine import RuleMatch, build_rule_engine
 from vulnhuntr.skill_loader import load_vuln_skills
 from rich.console import Console
-from typing import List, Generator
-from enum import Enum
+from typing import Dict, List, Generator
 from pathlib import Path
 from pydantic_xml import BaseXmlModel, element
 from pydantic import BaseModel, Field
@@ -43,26 +42,15 @@ class ContextCode(BaseModel):
     reason: str = Field(description="Brief reason why this function's code is needed for analysis")
     code_line: str = Field(description="The single line of code where where this context object is referenced.")
 
-def build_vuln_type_enum(vuln_types: List[str]) -> type[Enum]:
-    return Enum("VulnType", {name: name for name in vuln_types}, type=str)
-
-
-def build_response_model(vuln_type_enum: type[Enum]) -> type[BaseModel]:
+def build_response_model() -> type[BaseModel]:
     class Response(BaseModel):
         scratchpad: str = Field(description="Your step-by-step analysis process. Output in plaintext with no line breaks.")
         analysis: str = Field(description="Your final analysis. Output in plaintext with no line breaks.")
         poc: str = Field(description="Proof-of-concept exploit, if applicable.")
         confidence_score: int = Field(description="0-10, where 0 is no confidence and 10 is absolute certainty because you have the entire user input to server output code path.")
-        vulnerability_types: List[vuln_type_enum] = Field(description="The types of identified vulnerabilities")
         context_code: List[ContextCode] = Field(description="List of context code items requested for analysis, one function or class name per item. No standard library or third-party package code.")
 
     return Response
-
-
-def normalize_vuln_type(vuln_type: Enum | str) -> str:
-    if isinstance(vuln_type, Enum):
-        return vuln_type.value
-    return str(vuln_type)
 
 class ReadmeContent(BaseXmlModel, tag="readme_content"):
     content: str
@@ -92,6 +80,19 @@ class PreviousAnalysis(BaseXmlModel, tag="previous_analysis"):
 class ExampleBypasses(BaseXmlModel, tag="example_bypasses"):
     example_bypasses: str
 
+class SkillId(BaseXmlModel, tag="skill_id"):
+    skill_id: str
+
+class CandidateMatch(BaseXmlModel, tag="candidate_match"):
+    rule_id: str = element()
+    file_path: str = element()
+    start: int = element()
+    end: int = element()
+    snippet: str = element()
+
+class CandidateMatches(BaseXmlModel, tag="candidate_matches"):
+    matches: List[CandidateMatch] = []
+
 class CodeDefinition(BaseXmlModel, tag="code"):
     name: str = element()
     context_name_requested: str = element()
@@ -106,128 +107,6 @@ class RepoOps:
         self.repo_path = Path(repo_path)
         self.to_exclude = {'/setup.py', '/test', '/example', '/docs', '/site-packages', '.venv', 'virtualenv', '/dist'}
         self.file_names_to_exclude = ['test_', 'conftest', '_test.py']
-
-        patterns = [
-            #Async
-            r'async\sdef\s\w+\(.*?request',
-
-            # Gradio
-            r'gr.Interface\(.*?\)',
-            r'gr.Interface\.launch\(.*?\)',
-
-            # Flask
-            r'@app\.route\(.*?\)',
-            r'@blueprint\.route\(.*?\)',
-            r'class\s+\w+\(MethodView\):',
-            r'@(?:app|blueprint)\.add_url_rule\(.*?\)',
-
-            # FastAPI
-            r'@app\.(?:get|post|put|delete|patch|options|head|trace)\(.*?\)',
-            r'@router\.(?:get|post|put|delete|patch|options|head|trace)\(.*?\)',
-
-            # Django
-            r'url\(.*?\)', #Too broad?
-            r're_path\(.*?\)',
-            r'@channel_layer\.group_add',
-            r'@database_sync_to_async',
-
-            # Pyramid
-            r'@view_config\(.*?\)',
-
-            # Bottle
-            r'@(?:route|get|post|put|delete|patch)\(.*?\)',
-
-            # Tornado
-            r'class\s+\w+\((?:RequestHandler|WebSocketHandler)\):',
-            r'@tornado\.gen\.coroutine',
-            r'@tornado\.web\.asynchronous',
-
-            #WebSockets
-            r'websockets\.serve\(.*?\)',
-            r'@websocket\.(?:route|get|post|put|delete|patch|head|options)\(.*?\)',
-
-            # aiohttp
-            r'app\.router\.add_(?:get|post|put|delete|patch|head|options)\(.*?\)',
-            r'@routes\.(?:get|post|put|delete|patch|head|options)\(.*?\)',
-
-            # Sanic
-            r'@app\.(?:route|get|post|put|delete|patch|head|options)\(.*?\)',
-            r'@blueprint\.(?:route|get|post|put|delete|patch|head|options)\(.*?\)',
-
-            # Falcon
-            r'app\.add_route\(.*?\)',
-
-            # CherryPy
-            r'@cherrypy\.expose',
-
-            # web2py
-            r'def\s+\w+\(\):\s*return\s+dict\(',
-
-            # Quart (ASGI version of Flask)
-            r'@app\.route\(.*?\)',
-            r'@blueprint\.route\(.*?\)',
-
-            # Starlette (which FastAPI is based on)
-            r'@app\.route\(.*?\)',
-            r'Route\(.*?\)',
-
-            # Responder
-            r'@api\.route\(.*?\)',
-
-            # Hug
-            r'@hug\.(?:get|post|put|delete|patch|options|head)\(.*?\)',
-
-            # Dash (for analytical web applications)
-            r'@app\.callback\(.*?\)',
-
-            # GraphQL entry points
-            r'class\s+\w+\(graphene\.ObjectType\):',
-            r'@strawberry\.type',
-
-            # Generic decorators that might indicate custom routing
-            r'@route\(.*?\)',
-            r'@endpoint\(.*?\)',
-            r'@api\.\w+\(.*?\)',
-
-            # AWS Lambda handlers (which could be used with API Gateway)
-            r'def\s+lambda_handler\(event,\s*context\):',
-            r'def\s+handler\(event,\s*context\):',
-
-            # Azure Functions
-            r'def\s+\w+\(req:\s*func\.HttpRequest\)\s*->',
-
-            # Google Cloud Functions
-            r'def\s+\w+\(request\):'
-
-            # Server startup code
-            r'app\.run\(.*?\)',
-            r'serve\(app,.*?\)',
-            r'uvicorn\.run\(.*?\)',
-            r'application\.listen\(.*?\)',
-            r'run_server\(.*?\)',
-            r'server\.start\(.*?\)',
-            r'app\.listen\(.*?\)',
-            r'httpd\.serve_forever\(.*?\)',
-            r'tornado\.ioloop\.IOLoop\.current\(\)\.start\(\)',
-            r'asyncio\.run\(.*?\.serve\(.*?\)\)',
-            r'web\.run_app\(.*?\)',
-            r'WSGIServer\(.*?\)\.serve_forever\(\)',
-            r'make_server\(.*?\)\.serve_forever\(\)',
-            r'cherrypy\.quickstart\(.*?\)',
-            r'execute_from_command_line\(.*?\)',  # Django's manage.py
-            r'gunicorn\.app\.wsgiapp\.run\(\)',
-            r'waitress\.serve\(.*?\)',
-            r'hypercorn\.run\(.*?\)',
-            r'daphne\.run\(.*?\)',
-            r'werkzeug\.serving\.run_simple\(.*?\)',
-            r'gevent\.pywsgi\.WSGIServer\(.*?\)\.serve_forever\(\)',
-            r'grpc\.server\(.*?\)\.start\(\)',
-            r'app\.start_server\(.*?\)',  # Sanic
-            r'Server\(.*?\)\.run\(\)',    # Bottle
-        ]
-
-        # Compile the patterns for efficiency
-        self.compiled_patterns = [re.compile(pattern) for pattern in patterns]
 
     def get_readme_content(self) -> str:
         # Use glob to find README.md or README.rst in a case-insensitive manner in the root directory
@@ -246,41 +125,39 @@ class RepoOps:
         
         return
 
-    def get_relevant_py_files(self) -> Generator[Path, None, None]:
-        """Gets all Python files in a repo minus the ones in the exclude list (test, example, doc, docs)"""
+    def get_relevant_files(self, extensions: List[str]) -> Generator[Path, None, None]:
+        """Gets all source files matching extensions minus the ones in the exclude list."""
         files = []
-        for f in self.repo_path.rglob("*.py"):
-            # Convert the path to a string with forward slashes
-            f_str = str(f).replace('\\', '/')
-            
-            # Lowercase the string for case-insensitive matching
-            f_str = f_str.lower()
+        for ext in extensions:
+            for f in self.repo_path.rglob(f"*{ext}"):
+                # Convert the path to a string with forward slashes
+                f_str = str(f).replace('\\', '/')
+                
+                # Lowercase the string for case-insensitive matching
+                f_str = f_str.lower()
 
-            # Check if any exclusion pattern matches a substring of the full path
-            if any(exclude in f_str for exclude in self.to_exclude):
-                continue
+                # Check if any exclusion pattern matches a substring of the full path
+                if any(exclude in f_str for exclude in self.to_exclude):
+                    continue
 
-            # Check if the file name should be excluded
-            if any(fn in f.name for fn in self.file_names_to_exclude):
-                continue
-            
-            files.append(f)
+                # Check if the file name should be excluded
+                if any(fn in f.name for fn in self.file_names_to_exclude):
+                    continue
+                
+                files.append(f)
 
         return files
 
-    def get_network_related_files(self, files: List) -> Generator[Path, None, None]:
-        for py_f in files:
-            with py_f.open(encoding='utf-8') as f:
-                content = f.read()
-            if any(re.search(pattern, content) for pattern in self.compiled_patterns):
-                yield py_f
-
-    def get_files_to_analyze(self, analyze_path: Path | None = None) -> List[Path]:
+    def get_files_to_analyze(self, analyze_path: Path | None = None, extensions: List[str] | None = None) -> List[Path]:
         path_to_analyze = analyze_path or self.repo_path
+        extensions = extensions or [".c", ".h"]
         if path_to_analyze.is_file():
-            return [ path_to_analyze ]
+            return [path_to_analyze]
         elif path_to_analyze.is_dir():
-            return path_to_analyze.rglob('*.py')
+            files = []
+            for ext in extensions:
+                files.extend(list(path_to_analyze.rglob(f"*{ext}")))
+            return files
         else:
             raise FileNotFoundError(f"Specified analyze path does not exist: {path_to_analyze}")
 
@@ -292,6 +169,13 @@ def extract_between_tags(tag: str, string: str, strip: bool = False) -> list[str
     if strip:
         ext_list = [e.strip() for e in ext_list]
     return ext_list
+
+
+def group_matches_by_skill(matches: List[RuleMatch]) -> Dict[str, List[RuleMatch]]:
+    grouped: Dict[str, List[RuleMatch]] = {}
+    for match in matches:
+        grouped.setdefault(match.skill_id, []).append(match)
+    return grouped
 
 def initialize_llm(llm_arg: str, system_prompt: str = "") -> Claude | ChatGPT | Ollama:
     llm_arg = llm_arg.lower()
@@ -312,8 +196,16 @@ def initialize_llm(llm_arg: str, system_prompt: str = "") -> Claude | ChatGPT | 
     return llm
 
 def print_readable(report: BaseModel) -> None:
+    label_map = {
+        "scratchpad": "推理过程",
+        "analysis": "分析结论",
+        "poc": "PoC",
+        "confidence_score": "置信度",
+        "context_code": "上下文请求",
+    }
     for attr, value in vars(report).items():
-        console.print(f"{attr}:")
+        label = label_map.get(attr, attr)
+        console.print(f"{label}:")
         if isinstance(value, str):
             # For multiline strings, add indentation
             lines = value.split('\n')
@@ -322,8 +214,6 @@ def print_readable(report: BaseModel) -> None:
         elif isinstance(value, list):
             # For lists, print each item on a new line
             for item in value:
-                if isinstance(item, Enum):
-                    item = item.value
                 console.print(f"  - {item}")
         else:
             # For other types, just print the value
@@ -340,17 +230,23 @@ def run():
     args = parser.parse_args()
 
     repo = RepoOps(args.root)
-    code_extractor = SymbolExtractor(args.root)
+    code_extractor = CSymbolExtractor(args.root)
     skills = load_vuln_skills()
     skill_names = sorted(skills)
     vuln_display_names = [skills[name].display_name for name in skill_names]
-    VulnTypeEnum = build_vuln_type_enum(skill_names)
-    ResponseModel = build_response_model(VulnTypeEnum)
+    skills_without_rules = [name for name in skill_names if not skills[name].rules]
+    if skills_without_rules:
+        log.warning("Skills missing rules", skills=skills_without_rules)
+    if len(skills_without_rules) == len(skill_names):
+        raise ValueError("No rules found in skills; add <rules> blocks to SKILL.md files")
+    rule_engine = build_rule_engine(skills)
+    ResponseModel = build_response_model()
     log.info("Loaded vuln skills", skills=skill_names)
     if args.verbosity > 0:
-        console.print(f"Loaded skills: {', '.join(skill_names)}")
+        console.print(f"已加载技能: {', '.join(skill_names)}")
     # Get repo files that don't include stuff like tests and documentation
-    files = repo.get_relevant_py_files()
+    extensions = [".c", ".h"]
+    files = repo.get_relevant_files(extensions)
 
     # User specified --analyze flag
     if args.analyze:
@@ -359,13 +255,13 @@ def run():
 
         # If the path is absolute, use it as is, otherwise join it with the root path so user can specify relative paths
         if analyze_path.is_absolute():
-            files_to_analyze = repo.get_files_to_analyze(analyze_path)
+            files_to_analyze = repo.get_files_to_analyze(analyze_path, extensions)
         else:
-            files_to_analyze = repo.get_files_to_analyze(Path(args.root) / analyze_path)
+            files_to_analyze = repo.get_files_to_analyze(Path(args.root) / analyze_path, extensions)
 
     # Analyze the entire project for network-related files
     else:
-        files_to_analyze = repo.get_network_related_files(files)
+        files_to_analyze = files
     
     llm = initialize_llm(args.llm)
 
@@ -390,128 +286,155 @@ def run():
     
     llm = initialize_llm(args.llm, system_prompt)
 
+    scanned_files = 0
+    matched_files = 0
+    total_matches = 0
+
     # files_to_analyze is either a list of all network-related files or a list containing a single file/dir to analyze
     for py_f in files_to_analyze:
-        log.info(f"Performing initial analysis", file=str(py_f))
+        log.info("Scanning file for rule matches", file=str(py_f))
 
-        # This is the Initial analysis
         with py_f.open(encoding='utf-8') as f:
             content = f.read()
             if not len(content):
                 continue
 
-            console.print(f"\nAnalyzing {py_f}")
+            scanned_files += 1
+            matches = rule_engine.scan(content, str(py_f))
+            if args.verbosity > 1:
+                console.print(f"扫描 {py_f} - 命中: {len(matches)}")
+            if not matches:
+                continue
+
+            matched_files += 1
+            total_matches += len(matches)
+            matches_by_skill = group_matches_by_skill(matches)
+            log.info("Rule matches found", file=str(py_f), skills=sorted(matches_by_skill))
+
+            console.print(f"\n分析 {py_f}")
             console.print('-' * 40 +'\n')
+            if args.verbosity > 0:
+                console.print(f"规则命中: {', '.join(sorted(matches_by_skill))}")
 
-            user_prompt =(
-                    FileCode(file_path=str(py_f), file_source=content).to_xml() + b'\n' +
-                    Instructions(instructions=build_initial_analysis_prompt(vuln_display_names)).to_xml() + b'\n' +
-                    AnalysisApproach(analysis_approach=ANALYSIS_APPROACH_TEMPLATE).to_xml() + b'\n' +
-                    PreviousAnalysis(previous_analysis='').to_xml() + b'\n' +
-                    Guidelines(guidelines=GUIDELINES_TEMPLATE).to_xml() + b'\n' +
-                    ResponseFormat(response_format=json.dumps(ResponseModel.model_json_schema(), indent=4
+            for skill_name, skill_matches in matches_by_skill.items():
+                skill = skills.get(skill_name)
+                if not skill:
+                    log.warning("Unknown skill for rule match", skill=skill_name, file=py_f)
+                    continue
+                max_candidate_matches = 25
+                if len(skill_matches) > max_candidate_matches:
+                    log.info(
+                        "Truncating candidate matches",
+                        skill=skill_name,
+                        total=len(skill_matches),
+                        limit=max_candidate_matches,
                     )
-                ).to_xml()
-            ).decode()
+                    skill_matches = skill_matches[:max_candidate_matches]
 
-            initial_analysis_report = llm.chat(user_prompt, response_model=ResponseModel)
-            log.info("Initial analysis complete", report=initial_analysis_report.model_dump())
+                log.info("Using vuln skill", vuln_type=skill_name, skill=skill.name, matches=len(skill_matches))
 
-            print_readable(initial_analysis_report)
+                candidate_matches = CandidateMatches(
+                    matches=[
+                        CandidateMatch(
+                            rule_id=match.rule_id,
+                            file_path=match.file_path,
+                            start=match.start,
+                            end=match.end,
+                            snippet=match.snippet,
+                        )
+                        for match in skill_matches
+                    ]
+                )
 
-            # Secondary analysis
-            if initial_analysis_report.confidence_score > 0 and len(initial_analysis_report.vulnerability_types):
+                # Do not fetch the context code on the first pass of the secondary analysis because the context will be from the general analysis
+                stored_code_definitions = {}
+                definitions = CodeDefinitions(definitions=[])
+                same_context = False
 
-                for vuln_type in initial_analysis_report.vulnerability_types:
-                    vuln_type_name = normalize_vuln_type(vuln_type)
-                    skill = skills.get(vuln_type_name)
-                    if not skill:
-                        log.warning("Unknown vulnerability type from model", vuln_type=vuln_type_name, file=py_f)
-                        continue
-                    log.info("Using vuln skill", vuln_type=vuln_type_name, skill=skill.name)
+                # Don't include the first iteration of the secondary analysis in the user_prompt
+                previous_analysis = ''
+                previous_context_amount = 0
 
-                    # Do not fetch the context code on the first pass of the secondary analysis because the context will be from the general analysis
-                    stored_code_definitions = {}
-                    definitions = CodeDefinitions(definitions=[])
-                    same_context = False
+                for i in range(7):
+                    log.info("Performing vuln-specific analysis", iteration=i, vuln_type=skill_name, file=py_f)
 
-                    # Don't include the initial analysis or the first iteration of the secondary analysis in the user_prompt
-                    previous_analysis = ''
-                    previous_context_amount = 0
+                    # Only lookup context code and previous analysis on second pass and onwards
+                    if i > 0:
+                        previous_context_amount = len(stored_code_definitions)
+                        previous_analysis = secondary_analysis_report.analysis
 
-                    for i in range(7):
-                        log.info(f"Performing vuln-specific analysis", iteration=i, vuln_type=vuln_type_name, file=py_f)
+                        for context_item in secondary_analysis_report.context_code:
+                            # Make sure bot isn't requesting the same code multiple times
+                            if context_item.name not in stored_code_definitions:
+                                name = context_item.name
+                                code_line = context_item.code_line
+                                match = code_extractor.extract(name, code_line, files)
+                                if match:
+                                    stored_code_definitions[name] = match
 
-                        # Only lookup context code and previous analysis on second pass and onwards
-                        if i > 0:
-                            previous_context_amount = len(stored_code_definitions)
-                            previous_analysis = secondary_analysis_report.analysis
+                        code_definitions = list(stored_code_definitions.values())
+                        definitions = CodeDefinitions(definitions=code_definitions)
 
-                            for context_item in secondary_analysis_report.context_code:
-                                # Make sure bot isn't requesting the same code multiple times
-                                if context_item.name not in stored_code_definitions:
-                                    name = context_item.name
-                                    code_line = context_item.code_line
-                                    match = code_extractor.extract(name, code_line, files)
-                                    if match:
-                                        stored_code_definitions[name] = match
+                        if args.verbosity > 1:
+                            for definition in definitions.definitions:
+                                if '\n' in definition.source:
+                                    lines = definition.source.split('\n')
+                                    snippet = lines[0] + '\n' + lines[1]
+                                else:
+                                    snippet = definition.source[:75]
 
-                            code_definitions = list(stored_code_definitions.values())
-                            definitions = CodeDefinitions(definitions=code_definitions)
-                            
-                            if args.verbosity > 1:
-                                for definition in definitions.definitions:
-                                    if '\n' in definition.source:
-                                        lines = definition.source.split('\n')
-                                        snippet = lines[0] + '\n' + lines[1]
-                                    else:
-                                        snippet = definition.source[:75]
-                                    
-                                    console.print(f"Name: {definition.name}")
-                                    console.print(f"Context search: {definition.context_name_requested}")
-                                    console.print(f"File Path: {definition.file_path}")
-                                    console.print(f"First two lines from source: {snippet}\n")
+                                console.print(f"名称: {definition.name}")
+                                console.print(f"上下文搜索: {definition.context_name_requested}")
+                                console.print(f"文件路径: {definition.file_path}")
+                                console.print(f"源码前两行: {snippet}\n")
 
-                        vuln_specific_user_prompt = (
-                            FileCode(file_path=str(py_f), file_source=content).to_xml() + b'\n' +
-                            definitions.to_xml() + b'\n' +  # These are all the requested context functions and classes
-                            ExampleBypasses(
-                                example_bypasses='\n'.join(skill.bypasses)
-                            ).to_xml() + b'\n' +
-                            Instructions(instructions=skill.prompt).to_xml() + b'\n' +
-                            AnalysisApproach(analysis_approach=ANALYSIS_APPROACH_TEMPLATE).to_xml() + b'\n' +
-                            PreviousAnalysis(previous_analysis=previous_analysis).to_xml() + b'\n' +
-                            Guidelines(guidelines=GUIDELINES_TEMPLATE).to_xml() + b'\n' +
-                            ResponseFormat(
-                                response_format=json.dumps(
-                                    ResponseModel.model_json_schema(), indent=4
-                                )
-                            ).to_xml()
-                        ).decode()
+                    vuln_specific_user_prompt = (
+                        FileCode(file_path=str(py_f), file_source=content).to_xml() + b'\n' +
+                        SkillId(skill_id=skill.name).to_xml() + b'\n' +
+                        candidate_matches.to_xml() + b'\n' +
+                        definitions.to_xml() + b'\n' +  # These are all the requested context functions and classes
+                        ExampleBypasses(
+                            example_bypasses='\n'.join(skill.bypasses)
+                        ).to_xml() + b'\n' +
+                        Instructions(instructions=skill.prompt).to_xml() + b'\n' +
+                        AnalysisApproach(analysis_approach=ANALYSIS_APPROACH_TEMPLATE).to_xml() + b'\n' +
+                        PreviousAnalysis(previous_analysis=previous_analysis).to_xml() + b'\n' +
+                        Guidelines(guidelines=GUIDELINES_TEMPLATE).to_xml() + b'\n' +
+                        ResponseFormat(
+                            response_format=json.dumps(
+                                ResponseModel.model_json_schema(), indent=4
+                            )
+                        ).to_xml()
+                    ).decode()
 
-                        secondary_analysis_report = llm.chat(vuln_specific_user_prompt, response_model=ResponseModel)
-                        log.info("Secondary analysis complete", secondary_analysis_report=secondary_analysis_report.model_dump())
+                    secondary_analysis_report = llm.chat(vuln_specific_user_prompt, response_model=ResponseModel)
+                    log.info("Secondary analysis complete", secondary_analysis_report=secondary_analysis_report.model_dump())
 
-                        if args.verbosity > 0:
+                    if args.verbosity > 0:
+                        print_readable(secondary_analysis_report)
+
+                    if not len(secondary_analysis_report.context_code):
+                        log.debug("No new context functions or classes found")
+                        if args.verbosity == 0:
                             print_readable(secondary_analysis_report)
+                        break
 
-                        if not len(secondary_analysis_report.context_code):
-                            log.debug("No new context functions or classes found")
+                    # Check if any new context code is requested
+                    if previous_context_amount >= len(stored_code_definitions) and i > 0:
+                        # Let it request the same context once, then on the second time it requests the same context, break
+                        if same_context:
+                            log.debug("No new context functions or classes requested")
                             if args.verbosity == 0:
                                 print_readable(secondary_analysis_report)
                             break
-                        
-                        # Check if any new context code is requested
-                        if previous_context_amount >= len(stored_code_definitions) and i > 0:
-                            # Let it request the same context once, then on the second time it requests the same context, break
-                            if same_context:
-                                log.debug("No new context functions or classes requested")
-                                if args.verbosity == 0:
-                                    print_readable(secondary_analysis_report)
-                                break
-                            same_context = True
-                            log.debug("No new context functions or classes requested")
-                    pass
+                        same_context = True
+                        log.debug("No new context functions or classes requested")
+                pass
+
+    if args.verbosity > 0:
+        console.print(
+            f"扫描汇总 - 扫描文件: {scanned_files}, 命中文件: {matched_files}, 命中总数: {total_matches}"
+        )
 
 if __name__ == '__main__':
     run()
