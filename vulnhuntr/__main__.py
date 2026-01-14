@@ -43,12 +43,15 @@ class ContextCode(BaseModel):
     code_line: str = Field(description="The single line of code where where this context object is referenced.")
 
 def build_response_model() -> type[BaseModel]:
+    class Finding(BaseModel):
+        issue: str = Field(description="问题类型或简述")
+        file_path: str = Field(description="问题所在文件")
+        line: int = Field(description="问题行号(1-based)")
+        call_stack: List[str] = Field(description="从入口到问题点的调用栈")
+
     class Response(BaseModel):
-        scratchpad: str = Field(description="Your step-by-step analysis process. Output in plaintext with no line breaks.")
-        analysis: str = Field(description="Your final analysis. Output in plaintext with no line breaks.")
-        poc: str = Field(description="Proof-of-concept exploit, if applicable.")
-        confidence_score: int = Field(description="0-10, where 0 is no confidence and 10 is absolute certainty because you have the entire user input to server output code path.")
-        context_code: List[ContextCode] = Field(description="List of context code items requested for analysis, one function or class name per item. No standard library or third-party package code.")
+        findings: List[Finding] = Field(description="问题清单")
+        context_code: List[ContextCode] = Field(description="需要请求的上下文代码列表，不包含标准库或第三方库。")
 
     return Response
 
@@ -94,6 +97,7 @@ class CandidateMatch(BaseXmlModel, tag="candidate_match"):
     file_path: str = element()
     start: int = element()
     end: int = element()
+    line: int = element()
     snippet: str = element()
 
 class CandidateMatches(BaseXmlModel, tag="candidate_matches"):
@@ -183,6 +187,9 @@ def group_matches_by_skill(matches: List[RuleMatch]) -> Dict[str, List[RuleMatch
         grouped.setdefault(match.skill_id, []).append(match)
     return grouped
 
+def line_number_for_offset(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
+
 def initialize_llm(llm_arg: str, system_prompt: str = "") -> Claude | ChatGPT | Ollama:
     llm_arg = llm_arg.lower()
     if llm_arg == 'claude':
@@ -203,10 +210,7 @@ def initialize_llm(llm_arg: str, system_prompt: str = "") -> Claude | ChatGPT | 
 
 def print_readable(report: BaseModel) -> None:
     label_map = {
-        "scratchpad": "推理过程",
-        "analysis": "分析结论",
-        "poc": "PoC",
-        "confidence_score": "置信度",
+        "findings": "问题列表",
         "context_code": "上下文请求",
     }
     for attr, value in vars(report).items():
@@ -218,9 +222,15 @@ def print_readable(report: BaseModel) -> None:
             for line in lines:
                 console.print(f"  {line}")
         elif isinstance(value, list):
-            # For lists, print each item on a new line
-            for item in value:
-                console.print(f"  - {item}")
+            if value and isinstance(value[0], BaseModel):
+                for item in value:
+                    console.print("  -")
+                    for key, item_value in item.model_dump().items():
+                        console.print(f"    {key}: {item_value}")
+            else:
+                # For lists, print each item on a new line
+                for item in value:
+                    console.print(f"  - {item}")
         else:
             # For other types, just print the value
             console.print(f"  {value}")
@@ -349,6 +359,7 @@ def run():
                             file_path=match.file_path,
                             start=match.start,
                             end=match.end,
+                            line=line_number_for_offset(content, match.start),
                             snippet=match.snippet,
                         )
                         for match in skill_matches
@@ -370,7 +381,12 @@ def run():
                     # Only lookup context code and previous analysis on second pass and onwards
                     if i > 0:
                         previous_context_amount = len(stored_code_definitions)
-                        previous_analysis = secondary_analysis_report.analysis
+                        previous_analysis = ''
+                        if secondary_analysis_report.findings:
+                            previous_analysis = json.dumps(
+                                [finding.model_dump() for finding in secondary_analysis_report.findings],
+                                ensure_ascii=False,
+                            )
 
                         for context_item in secondary_analysis_report.context_code:
                             # Make sure bot isn't requesting the same code multiple times

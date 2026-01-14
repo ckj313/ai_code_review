@@ -2,28 +2,25 @@
 
 <display_name>Integer Overflow (INT_OVERFLOW)</display_name>
 
-<summary>Detect unsafe integer arithmetic used for allocation or copy sizes.</summary>
+<summary>检测长度与尺寸计算中的整数溢出问题。</summary>
 
 <prompt>
-Combine the code in <file_code> and <context_code> tags then analyze the C code for remotely exploitable Integer Overflow vulnerabilities by following the remote user-input call chain of code.
+结合 <file_code> 和 <context_code>，以白盒代码检查视角排查整数溢出问题。
 
-INT_OVERFLOW-Specific Focus Areas:
-1. High-Risk Patterns:
-   - Size calculations for allocations or copies
-   - Multiplication/addition on untrusted lengths
-   - Signed/unsigned conversions
-
-2. Common APIs:
+关注点：
+1. 高风险模式：
+   - 分配或拷贝长度计算
+   - 不可信长度参与加/乘
+   - 有符号/无符号转换
+2. 常见接口：
    - malloc(), calloc(), realloc()
    - memcpy(), memmove(), memset()
-   - length-based parsing loops
+   - 基于长度的解析循环
 
-3. Example INT_OVERFLOW payloads are provided in <example_bypasses></example_bypasses> tags.
-
-When analyzing, consider:
-- Whether integer math is bounded before use
-- Whether the result is used for allocation or copy sizes
-- Whether truncation or wraparound can be exploited
+输出要求：
+- 只报告代码问题，不做漏洞利用分析。
+- 结合 <candidate_matches> 提供的证据。
+- 给出问题行号与调用栈。
 </prompt>
 
 <positive_example>

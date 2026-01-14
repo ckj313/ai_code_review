@@ -15,7 +15,7 @@
 请：
 - 只判断该合规问题是否成立。
 - 在分析结论中引用 <candidate_matches> 中的证据片段。
-- PoC 字段如不适用请输出 "None"。
+- 给出问题行号与调用栈。
 </prompt>
 
 <positive_example>

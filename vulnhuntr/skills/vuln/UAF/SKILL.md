@@ -2,28 +2,26 @@
 
 <display_name>Use-After-Free (UAF)</display_name>
 
-<summary>Detect dereferences of freed pointers along a remote input path.</summary>
+<summary>检测释放后使用或重复释放的问题。</summary>
 
 <prompt>
-Combine the code in <file_code> and <context_code> tags then analyze the C code for remotely exploitable Use-After-Free (UAF) vulnerabilities by following the remote user-input call chain of code.
+结合 <file_code> 和 <context_code>，以白盒代码检查视角排查释放后使用问题。
 
-UAF-Specific Focus Areas:
-1. Freeing Memory:
+关注点：
+1. 释放行为：
    - free(), kfree(), vPortFree()
-   - custom allocators and pool free routines
+   - 自定义分配器或内存池释放
+2. 释放后使用：
+   - free 后仍访问/解引用
+   - double free
+3. 生命周期管理：
+   - 归属不清导致重复释放
+   - 错误路径释放后仍继续使用
 
-2. Use After Free:
-   - Accessing or dereferencing pointers after free
-   - Double free patterns
-
-3. Lifetime Management:
-   - Ownership confusion across modules
-   - Error paths that free but continue to use pointers
-
-When analyzing, consider:
-- Whether freed pointers are reused or accessed
-- Whether there is clear ownership and nulling after free
-- Whether user input can influence allocation/free timing
+输出要求：
+- 只报告代码问题，不做漏洞利用分析。
+- 结合 <candidate_matches> 提供的证据。
+- 给出问题行号与调用栈。
 </prompt>
 
 <positive_example>

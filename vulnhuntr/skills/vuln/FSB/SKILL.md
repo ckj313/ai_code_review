@@ -2,30 +2,26 @@
 
 <display_name>Format String Bug (FSB)</display_name>
 
-<summary>Detect attacker-controlled format strings in printf-style logging and output.</summary>
+<summary>检测格式化字符串使用不当的问题。</summary>
 
 <prompt>
-Combine the code in <file_code> and <context_code> tags then analyze the C code for remotely exploitable Format String vulnerabilities by following the remote user-input call chain of code.
+结合 <file_code> 和 <context_code>，以白盒代码检查视角排查格式化字符串问题。
 
-FSB-Specific Focus Areas:
-1. High-Risk Functions and APIs:
+关注点：
+1. 高风险函数与接口：
    - printf(), fprintf(), sprintf(), snprintf()
    - vprintf(), vsprintf(), vsnprintf(), dprintf(), vdprintf()
    - syslog()
+2. 格式化字符串控制：
+   - 不可信输入作为格式化字符串
+   - 缺失格式化占位符
+3. 风险影响：
+   - %x/%p 信息泄露，%n 写入等
 
-2. Format String Control:
-   - User input used as the format string
-   - Missing format specifiers with untrusted data
-
-3. Memory Safety Impact:
-   - %x/%p leaks, %n writes, stack disclosure
-
-4. Example FSB payloads are provided in <example_bypasses></example_bypasses> tags.
-
-When analyzing, consider:
-- Whether the format string is attacker-controlled
-- Whether the call is reachable from remote input
-- Potential for info leak or memory writes via %n
+输出要求：
+- 只报告代码问题，不做漏洞利用分析。
+- 结合 <candidate_matches> 提供的证据。
+- 给出问题行号与调用栈。
 </prompt>
 
 <positive_example>
