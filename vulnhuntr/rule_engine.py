@@ -22,11 +22,22 @@ def _extract_snippet(text: str, start: int, end: int, radius: int = 120) -> str:
     return snippet.replace("\n", " ").replace("\r", " ").strip()
 
 
+def _normalize_pattern(pattern: str) -> str:
+    # Convert leading inline flags like (?i) to a scoped group (?i:...)
+    flag_match = re.match(r"^\(\?([aiLmsux]+)\)", pattern)
+    if flag_match:
+        flags = flag_match.group(1)
+        rest = pattern[flag_match.end():]
+        return f"(?{flags}:{rest})"
+    return pattern
+
+
 def _validate_rule_patterns(rules: Sequence[SkillRule]) -> None:
     for rule in rules:
         pattern = rule.pattern
         if rule.kind == "literal":
             pattern = re.escape(pattern)
+        pattern = _normalize_pattern(pattern)
         try:
             re.compile(pattern, re.MULTILINE)
         except re.error as exc:
@@ -72,6 +83,7 @@ class CombinedRegexEngine:
             pattern = rule.pattern
             if rule.kind == "literal":
                 pattern = re.escape(pattern)
+            pattern = _normalize_pattern(pattern)
             parts.append(f"(?P<{group_name}>{pattern})")
         combined = "|".join(parts)
         return re.compile(combined, re.MULTILINE), group_to_rule

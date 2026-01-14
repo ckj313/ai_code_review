@@ -2,6 +2,8 @@
 
 <display_name>Use-After-Free (UAF)</display_name>
 
+<summary>Detect dereferences of freed pointers along a remote input path.</summary>
+
 <prompt>
 Combine the code in <file_code> and <context_code> tags then analyze the C code for remotely exploitable Use-After-Free (UAF) vulnerabilities by following the remote user-input call chain of code.
 
@@ -23,6 +25,16 @@ When analyzing, consider:
 - Whether there is clear ownership and nulling after free
 - Whether user input can influence allocation/free timing
 </prompt>
+
+<positive_example>
+free(obj);
+obj->state = 1;
+</positive_example>
+
+<negative_example>
+free(obj);
+obj = NULL;
+</negative_example>
 
 <bypasses>
 </bypasses>

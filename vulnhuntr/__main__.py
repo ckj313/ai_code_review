@@ -11,7 +11,7 @@ from vulnhuntr.prompts import (
     build_system_prompt,
 )
 from vulnhuntr.rule_engine import RuleMatch, build_rule_engine
-from vulnhuntr.skill_loader import load_vuln_skills
+from vulnhuntr.skill_loader import load_skill_details, load_vuln_skills
 from rich.console import Console
 from typing import Dict, List, Generator
 from pathlib import Path
@@ -82,6 +82,12 @@ class ExampleBypasses(BaseXmlModel, tag="example_bypasses"):
 
 class SkillId(BaseXmlModel, tag="skill_id"):
     skill_id: str
+
+class PositiveExample(BaseXmlModel, tag="positive_example"):
+    positive_example: str
+
+class NegativeExample(BaseXmlModel, tag="negative_example"):
+    negative_example: str
 
 class CandidateMatch(BaseXmlModel, tag="candidate_match"):
     rule_id: str = element()
@@ -231,7 +237,7 @@ def run():
 
     repo = RepoOps(args.root)
     code_extractor = CSymbolExtractor(args.root)
-    skills = load_vuln_skills()
+    skills = load_vuln_skills(load_full=False)
     skill_names = sorted(skills)
     vuln_display_names = [skills[name].display_name for name in skill_names]
     skills_without_rules = [name for name in skill_names if not skills[name].rules]
@@ -321,6 +327,9 @@ def run():
                 if not skill:
                     log.warning("Unknown skill for rule match", skill=skill_name, file=py_f)
                     continue
+                if not skill.prompt:
+                    skill = load_skill_details(skill)
+                    skills[skill_name] = skill
                 max_candidate_matches = 25
                 if len(skill_matches) > max_candidate_matches:
                     log.info(
@@ -395,6 +404,12 @@ def run():
                         definitions.to_xml() + b'\n' +  # These are all the requested context functions and classes
                         ExampleBypasses(
                             example_bypasses='\n'.join(skill.bypasses)
+                        ).to_xml() + b'\n' +
+                        PositiveExample(
+                            positive_example=skill.positive_example
+                        ).to_xml() + b'\n' +
+                        NegativeExample(
+                            negative_example=skill.negative_example
                         ).to_xml() + b'\n' +
                         Instructions(instructions=skill.prompt).to_xml() + b'\n' +
                         AnalysisApproach(analysis_approach=ANALYSIS_APPROACH_TEMPLATE).to_xml() + b'\n' +

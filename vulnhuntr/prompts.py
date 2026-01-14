@@ -78,6 +78,7 @@ ANALYSIS_APPROACH_TEMPLATE = """Analysis Instructions:
    - Identify potential entry points for vulnerabilities.
    - Consider non-obvious attack vectors and edge cases.
    - Use <candidate_matches> to prioritize where to start analysis.
+   - 参考 <positive_example> 和 <negative_example>，降低误报。
    - Respond in Chinese for all fields.
 
 3. Code Path Analysis:

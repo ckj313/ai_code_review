@@ -19,9 +19,13 @@ class SkillRule:
 class VulnSkill:
     name: str
     display_name: str
+    summary: str
     prompt: str
     bypasses: List[str]
     rules: List[SkillRule]
+    positive_example: str
+    negative_example: str
+    path: Path
 
 
 def _extract_tag(content: str, tag: str) -> str:
@@ -76,33 +80,61 @@ def _parse_rules(block: str, skill_name: str) -> List[SkillRule]:
     return rules
 
 
-@lru_cache(maxsize=4)
-def load_vuln_skills(skills_dir: Path | None = None) -> Dict[str, VulnSkill]:
-    root = Path(skills_dir) if skills_dir else SKILLS_DIR
-    if not root.exists():
-        raise FileNotFoundError(f"Skills directory not found: {root}")
+def _load_skill_file(skill_file: Path, load_full: bool) -> VulnSkill:
+    content = skill_file.read_text(encoding="utf-8")
+    name = skill_file.parent.name.upper()
+    display_name = _extract_tag(content, "display_name") or name
+    summary = _extract_tag(content, "summary") or display_name
+    rules_block = _extract_tag(content, "rules")
+    rules = _parse_rules(rules_block, name)
 
-    skills: Dict[str, VulnSkill] = {}
-    for skill_file in sorted(root.glob("*/SKILL.md")):
-        content = skill_file.read_text(encoding="utf-8")
-        name = skill_file.parent.name.upper()
-        display_name = _extract_tag(content, "display_name") or name
+    prompt = ""
+    bypasses: List[str] = []
+    positive_example = ""
+    negative_example = ""
+    if load_full:
         prompt = _extract_tag(content, "prompt")
         if not prompt:
             raise ValueError(f"Missing <prompt> tag in {skill_file}")
         bypasses_block = _extract_tag(content, "bypasses")
         bypasses = _parse_bypasses(bypasses_block)
-        rules_block = _extract_tag(content, "rules")
-        rules = _parse_rules(rules_block, name)
-        if name in skills:
-            raise ValueError(f"Duplicate skill name: {name}")
-        skills[name] = VulnSkill(
-            name=name,
-            display_name=display_name,
-            prompt=prompt,
-            bypasses=bypasses,
-            rules=rules,
-        )
+        positive_example = _extract_tag(content, "positive_example")
+        negative_example = _extract_tag(content, "negative_example")
+
+    return VulnSkill(
+        name=name,
+        display_name=display_name,
+        summary=summary,
+        prompt=prompt,
+        bypasses=bypasses,
+        rules=rules,
+        positive_example=positive_example,
+        negative_example=negative_example,
+        path=skill_file,
+    )
+
+
+def load_skill_details(skill: VulnSkill) -> VulnSkill:
+    if skill.prompt:
+        return skill
+    return _load_skill_file(skill.path, load_full=True)
+
+
+@lru_cache(maxsize=4)
+def load_vuln_skills(
+    skills_dir: Path | None = None,
+    load_full: bool = True,
+) -> Dict[str, VulnSkill]:
+    root = Path(skills_dir) if skills_dir else SKILLS_DIR
+    if not root.exists():
+        raise FileNotFoundError(f"Skills directory not found: {root}")
+
+    skills: Dict[str, VulnSkill] = {}
+    for skill_file in sorted(root.glob("**/SKILL.md")):
+        skill = _load_skill_file(skill_file, load_full)
+        if skill.name in skills:
+            raise ValueError(f"Duplicate skill name: {skill.name}")
+        skills[skill.name] = skill
 
     if not skills:
         raise ValueError(f"No skills found under {root}")

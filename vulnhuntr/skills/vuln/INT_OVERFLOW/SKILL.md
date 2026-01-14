@@ -2,6 +2,8 @@
 
 <display_name>Integer Overflow (INT_OVERFLOW)</display_name>
 
+<summary>Detect unsafe integer arithmetic used for allocation or copy sizes.</summary>
+
 <prompt>
 Combine the code in <file_code> and <context_code> tags then analyze the C code for remotely exploitable Integer Overflow vulnerabilities by following the remote user-input call chain of code.
 
@@ -23,6 +25,19 @@ When analyzing, consider:
 - Whether the result is used for allocation or copy sizes
 - Whether truncation or wraparound can be exploited
 </prompt>
+
+<positive_example>
+size_t len = count * sizeof(struct item);
+char *buf = malloc(len);
+</positive_example>
+
+<negative_example>
+if (count > SIZE_MAX / sizeof(struct item)) {
+    return -1;
+}
+size_t len = count * sizeof(struct item);
+char *buf = malloc(len);
+</negative_example>
 
 <bypasses>
 - 2147483647

@@ -2,6 +2,8 @@
 
 <display_name>Format String Bug (FSB)</display_name>
 
+<summary>Detect attacker-controlled format strings in printf-style logging and output.</summary>
+
 <prompt>
 Combine the code in <file_code> and <context_code> tags then analyze the C code for remotely exploitable Format String vulnerabilities by following the remote user-input call chain of code.
 
@@ -25,6 +27,14 @@ When analyzing, consider:
 - Whether the call is reachable from remote input
 - Potential for info leak or memory writes via %n
 </prompt>
+
+<positive_example>
+printf(user_input);
+</positive_example>
+
+<negative_example>
+printf("%s", user_input);
+</negative_example>
 
 <bypasses>
 - %x %x %x %x
